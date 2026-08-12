@@ -263,11 +263,17 @@ export default function HospitalHomePage() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
+              <Button variant="ghost" asChild>
+                <Link href={`/${hospitalSlug}/auth/patient-login`} className="flex items-center space-x-2">
+                  <UserCheck className="h-4 w-4" />
+                  <span>Patient Login</span>
+                </Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href={`/${hospitalSlug}/auth/patient-signup`}>Sign Up</Link>
+              </Button>
               <Button variant="outline" asChild>
                 <Link href={`/${hospitalSlug}/auth/login`}>Staff Login</Link>
-              </Button>
-              <Button asChild>
-                <Link href="#contact">Contact Us</Link>
               </Button>
             </div>
           </div>
@@ -446,7 +452,13 @@ export default function HospitalHomePage() {
             <span className="font-semibold">{hospital.name}</span>
           </div>
           <p className="text-sm">© 2025 {hospital.name}. All rights reserved.</p>
-          <div className="mt-4">
+          <div className="mt-4 flex items-center justify-center space-x-3">
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/${hospitalSlug}/auth/patient-login`} className="inline-flex items-center space-x-2">
+                <span>Patient Login</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
             <Button variant="outline" size="sm" asChild>
               <Link href={`/${hospitalSlug}/auth/login`} className="inline-flex items-center space-x-2">
                 <span>Staff Portal</span>
