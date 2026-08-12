@@ -84,7 +84,7 @@ export default function CreateHospitalPage() {
         
         // Create subdomain URL
         const subdomain = formData.subdomain.toLowerCase().trim()
-        const url = `https://${subdomain}.yourdomain.com`
+        const url = `${window.location.origin}/${subdomain}/admin`
         
         toast("Hospital system created", {
           description: `Your hospital system is ready at: ${url}`,
