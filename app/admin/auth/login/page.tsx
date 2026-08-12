@@ -126,7 +126,8 @@ export default function AdminLoginPage() {
         // Set loading state to show user something is happening
         setIsLoading(true);
         
-        if (formData.role === 'superadmin') {
+        const userRole = data.user?.role || formData.role;
+        if (userRole === 'superadmin') {
           console.log('Redirecting to superadmin dashboard...');
           // Use a form submission redirect for the most reliable navigation
           const form = document.createElement('form');
@@ -136,10 +137,11 @@ export default function AdminLoginPage() {
           form.submit();
         } else {
           console.log('Redirecting to hospital admin dashboard...');
+          const hospitalSubdomain = data.user?.hospital?.subdomain || data.user?.hospitalSubdomain;
           // Hospital admin redirect using the same reliable method
           const form = document.createElement('form');
           form.method = 'GET';
-          form.action = '/' + data.user.hospital.subdomain + '/admin/dashboard';
+          form.action = '/' + (hospitalSubdomain || 'central') + '/admin/dashboard';
           document.body.appendChild(form);
           form.submit();
         }
