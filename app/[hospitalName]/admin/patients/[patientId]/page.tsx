@@ -104,7 +104,7 @@ export default function PatientDetailsPage({ params }: PatientDetailsPageProps) 
         }
         
         // For existing patients, fetch from API as usual
-        const response = await fetch(`/api/patients/${patientId}`)
+        const response = await fetch(`/api/patients/id/${patientId}`)
         
         if (!response.ok) {
           throw new Error(`Failed to fetch patient: ${response.status} ${response.statusText}`)

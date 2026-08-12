@@ -28,7 +28,7 @@ export default function AntenatalPage() {
         setError(null);
         
         // Fetch basic patient info
-        const patientResponse = await fetch(`/api/patients/${patientId}`);
+        const patientResponse = await fetch(`/api/patients/id/${patientId}`);
         
         if (!patientResponse.ok) {
           throw new Error(`Failed to fetch patient: ${patientResponse.status}`);

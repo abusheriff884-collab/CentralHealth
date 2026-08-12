@@ -171,7 +171,7 @@ export default function SuperAdminPatientProfile() {
     setError(null);
     
     try {
-      const response = await fetch(`/api/patients/${patientId}`);
+      const response = await fetch(`/api/patients/id/${patientId}`);
       
       if (!response.ok) {
         const errorText = await response.text();

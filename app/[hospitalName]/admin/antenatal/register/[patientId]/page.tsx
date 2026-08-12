@@ -195,7 +195,7 @@ export default function AntenatalRegistration() {
         }
         
         // If not in localStorage, fetch from API
-        const response = await fetch(`/api/patients/${patientId}`)
+        const response = await fetch(`/api/patients/id/${patientId}`)
         if (!response.ok) {
           throw new Error('Failed to fetch patient data')
         }
