@@ -1,0 +1,552 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import { PageHeader } from "@/components/page-header"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Search, Users, UserPlus, Activity, Calendar, FileText } from "lucide-react"
+import { toast } from "sonner"
+
+// FHIR Patient interface
+interface FHIRPatient {
+  id: string
+  resourceType: string
+  medicalNumber: string
+  active: boolean
+  name?: Array<{
+    text?: string
+    family?: string
+    given?: string[]
+  }> | string
+  telecom?: Array<{
+    system: string
+    value: string
+    use?: string
+  }> | string
+  gender?: string
+  birthDate?: string
+  address?: Array<{
+    line?: string[]
+    city?: string
+    state?: string
+    postalCode?: string
+    country?: string
+  }> | string
+  photo?: string
+  email?: string
+}
+
+// Pagination interface
+interface PaginationProps {
+  currentPage: number
+  totalPages: number
+  onPageChange: (page: number) => void
+}
+
+// Pagination component
+function Pagination({ currentPage, totalPages, onPageChange }: PaginationProps) {
+  // Generate page numbers to display
+  const getPageNumbers = () => {
+    const pages = []
+    const maxPagesToShow = 5 // Maximum number of page numbers to show
+    
+    if (totalPages <= maxPagesToShow) {
+      // If total pages is less than or equal to max, show all pages
+      for (let i = 1; i <= totalPages; i++) {
+        pages.push(i)
+      }
+    } else {
+      // Always show first page
+      pages.push(1)
+      
+      // Calculate start and end of page numbers to display
+      let start = Math.max(2, currentPage - 1)
+      let end = Math.min(totalPages - 1, currentPage + 1)
+      
+      // Adjust to always show 3 pages in the middle
+      if (start === 2) end = Math.min(4, totalPages - 1)
+      if (end === totalPages - 1) start = Math.max(2, totalPages - 3)
+      
+      // Add ellipsis if needed
+      if (start > 2) pages.push(-1) // -1 represents ellipsis
+      
+      // Add middle pages
+      for (let i = start; i <= end; i++) {
+        pages.push(i)
+      }
+      
+      // Add ellipsis if needed
+      if (end < totalPages - 1) pages.push(-2) // -2 represents ellipsis
+      
+      // Always show last page
+      pages.push(totalPages)
+    }
+    
+    return pages
+  }
+
+  return (
+    <div className="flex items-center justify-center space-x-2 mt-4">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+        disabled={currentPage === 1}
+      >
+        <span className="sr-only">Previous Page</span>
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m15 18-6-6 6-6"/></svg>
+      </Button>
+      
+      {getPageNumbers().map((page, i) => {
+        if (page === -1 || page === -2) {
+          return (
+            <Button 
+              key={`ellipsis-${i}`} 
+              variant="ghost" 
+              size="sm" 
+              disabled 
+              className="px-3 opacity-50"
+            >
+              ...
+            </Button>
+          )
+        }
+        
+        return (
+          <Button
+            key={page}
+            variant={currentPage === page ? "default" : "outline"}
+            size="sm"
+            onClick={() => onPageChange(page)}
+            className="px-3"
+          >
+            {page}
+          </Button>
+        )
+      })}
+      
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => onPageChange(Math.min(totalPages, currentPage + 1))}
+        disabled={currentPage >= totalPages}
+      >
+        <span className="sr-only">Next Page</span>
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m9 18 6-6-6-6"/></svg>
+      </Button>
+    </div>
+  )
+}
+
+interface PatientsPageProps {
+  params: { hospitalName: string }
+}
+
+export default function PatientsPage({ params }: PatientsPageProps) {
+  const { hospitalName } = params;
+  const formattedHospitalName = hospitalName.replace(/-/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+  
+  // State management
+  const [searchQuery, setSearchQuery] = useState("");
+  const [medicalNumberQuery, setMedicalNumberQuery] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [patients, setPatients] = useState<FHIRPatient[]>([]);
+  const [totalPatients, setTotalPatients] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [searchPerformed, setSearchPerformed] = useState<boolean>(false);
+  
+  // Function to extract patient name from FHIR structure
+  const getPatientName = (patient: FHIRPatient): string => {
+    if (!patient.name) return "Unknown";
+    
+    try {
+      // Parse JSON if it's a string
+      const nameData = typeof patient.name === 'string' 
+        ? JSON.parse(patient.name) 
+        : patient.name;
+      
+      // Handle array of names or single name object
+      const nameObj = Array.isArray(nameData) ? nameData[0] : nameData;
+      
+      // Use text if available
+      if (nameObj.text) return nameObj.text;
+      
+      // Otherwise construct from parts
+      const given = nameObj.given ? nameObj.given.join(' ') : '';
+      const family = nameObj.family || '';
+      
+      return `${given} ${family}`.trim() || "Unknown";
+    } catch (e) {
+      console.error("Error parsing patient name:", e);
+      return "Unknown";
+    }
+  };
+  
+  // Function to get patient initials for avatar
+  const getPatientInitials = (patient: FHIRPatient): string => {
+    const name = getPatientName(patient);
+    return name.split(' ')
+      .map(part => part[0])
+      .join('')
+      .toUpperCase().substring(0, 2) || '??';
+  };
+  
+  // Function to calculate age from birthDate
+  const calculateAge = (birthDate: string): number => {
+    const birth = new Date(birthDate);
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const monthDiff = today.getMonth() - birth.getMonth();
+    
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+      age--;
+    }
+    
+    return age;
+  };
+  
+  // Function to get primary contact information
+  const getContactInfo = (patient: FHIRPatient): { phone: string, email: string } => {
+    let phone = '';
+    let email = patient.email || '';
+    
+    try {
+      // Check telecom array
+      if (patient.telecom) {
+        const telecomData = typeof patient.telecom === 'string' 
+          ? JSON.parse(patient.telecom) 
+          : patient.telecom;
+        
+        if (Array.isArray(telecomData)) {
+          // Find phone
+          const phoneContact = telecomData.find(t => t.system === 'phone');
+          if (phoneContact) phone = phoneContact.value;
+          
+          // Find email if not already set
+          if (!email) {
+            const emailContact = telecomData.find(t => t.system === 'email');
+            if (emailContact) email = emailContact.value;
+          }
+        }
+      }
+      
+      return { phone, email };
+    } catch (e) {
+      console.error('Error parsing contact info:', e);
+      return { phone: '', email: '' };
+    }
+  };
+
+  // Function to search patients from centralized registry
+  const searchPatients = async () => {
+    setIsLoading(true);
+    setSearchPerformed(true);
+    
+    try {
+      // Build query parameters
+      const params = new URLSearchParams();
+      
+      if (searchQuery) {
+        params.append('search', searchQuery);
+      }
+      
+      if (medicalNumberQuery) {
+        params.append('medicalNumber', medicalNumberQuery);
+      }
+      
+      // Add hospital ID for hospital-specific patients
+      params.append('hospitalId', hospitalName);
+      
+      // Add pagination
+      params.append('page', currentPage.toString());
+      params.append('pageSize', pageSize.toString());
+      
+      const response = await fetch(`/api/patients?${params.toString()}`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch patients');
+      }
+      
+      const data = await response.json();
+      setPatients(data.patients || []);
+      setTotalPatients(data.pagination?.total || 0);
+      
+      if (data.patients.length === 0 && searchPerformed) {
+        toast.info("No patients found matching your criteria");
+      }
+      
+    } catch (error) {
+      console.error('Error searching patients:', error);
+      toast.error('Failed to search patients');
+      setPatients([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // Handle form submission for search
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Reset to first page when performing a new search
+    setCurrentPage(1); 
+    searchPatients();
+  };
+  
+  // Handle page change
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    searchPatients();
+  };
+  
+  // Initialize with sample data on first load
+  useEffect(() => {
+    // Only load data if we haven't performed a search yet
+    if (!searchPerformed) {
+      searchPatients();
+    }
+  }, []);
+
+  const pageCount = Math.ceil(totalPatients / pageSize);
+
+  return (
+    <div className="flex-1 space-y-6 p-4 md:p-8 pt-6">
+      <PageHeader
+        title={`${formattedHospitalName} - Patient Management`}
+        description="Search and access patients from the centralized FHIR patient registry"
+        breadcrumbs={[{ label: formattedHospitalName }, { label: "Admin" }, { label: "Patient Management" }]}
+      />
+
+      {/* Stats Cards */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Patients</CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{totalPatients}</div>
+            <p className="text-xs text-muted-foreground">Centralized patient registry</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Recent Patients</CardTitle>
+            <UserPlus className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">20</div>
+            <p className="text-xs text-muted-foreground">Added this month</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Active Patients</CardTitle>
+            <Activity className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">75%</div>
+            <p className="text-xs text-muted-foreground">Of total patient base</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Appointments Today</CardTitle>
+            <Calendar className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">12</div>
+            <p className="text-xs text-muted-foreground">Scheduled visits</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Patient Search Form */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Patient Search</CardTitle>
+          <CardDescription>
+            Search the centralized patient registry using name, email or medical number
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={handleSearch} className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="searchQuery">Search by Name or Email</Label>
+                <div className="flex space-x-2">
+                  <Input
+                    id="searchQuery"
+                    placeholder="Enter patient name or email"
+                    className="flex-1"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="medicalNumberQuery">Search by Medical Number</Label>
+                <div className="flex space-x-2">
+                  <Input
+                    id="medicalNumberQuery"
+                    placeholder="10-digit medical number"
+                    className="flex-1" 
+                    value={medicalNumberQuery}
+                    onChange={(e) => setMedicalNumberQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end space-x-2">
+              <Button 
+                type="button" 
+                variant="outline"
+                onClick={() => {
+                  setSearchQuery('');
+                  setMedicalNumberQuery('');
+                }}
+              >
+                Clear
+              </Button>
+              <Button type="submit" disabled={isLoading}>
+                {isLoading ? (
+                  <>
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-b-transparent"></div>
+                    Searching...
+                  </>
+                ) : (
+                  <>
+                    <Search className="mr-2 h-4 w-4" />
+                    Search Patients
+                  </>
+                )}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* Patient Results */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Patient Directory (FHIR-Compliant)</CardTitle>
+          <CardDescription>
+            {searchPerformed 
+              ? `Found ${totalPatients} patient(s) matching your search criteria` 
+              : "Showing patients from the centralized registry"}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border mb-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Medical Number</TableHead>
+                  <TableHead>Patient Name</TableHead>
+                  <TableHead>Age</TableHead>
+                  <TableHead>Gender</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Phone</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8">
+                      <div className="flex justify-center">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                      </div>
+                      <div className="mt-2 text-sm text-muted-foreground">Loading patients...</div>
+                    </TableCell>
+                  </TableRow>
+                ) : patients.length > 0 ? (
+                  patients.map((patient) => {
+                    const patientName = getPatientName(patient);
+                    const patientInitials = getPatientInitials(patient);
+                    const contactInfo = getContactInfo(patient);
+                    const age = patient.birthDate ? calculateAge(patient.birthDate) : "--";
+                    
+                    return (
+                      <TableRow key={patient.id}>
+                        <TableCell className="font-mono text-sm">{patient.medicalNumber}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Avatar className="h-8 w-8">
+                              {patient.photo ? (
+                                <AvatarImage src={patient.photo} alt={patientName} />
+                              ) : (
+                                <AvatarFallback>{patientInitials}</AvatarFallback>
+                              )}
+                            </Avatar>
+                            <div className="font-medium">{patientName}</div>
+                          </div>
+                        </TableCell>
+                        <TableCell>{age}</TableCell>
+                        <TableCell className="capitalize">{patient.gender || "--"}</TableCell>
+                        <TableCell>{contactInfo.email || "--"}</TableCell>
+                        <TableCell>{contactInfo.phone || "--"}</TableCell>
+                        <TableCell>
+                          <Badge variant={patient.active ? "default" : "secondary"}>
+                            {patient.active ? "Active" : "Inactive"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button variant="ghost" size="icon" asChild>
+                              <a href={`/${hospitalName}/admin/patients/${patient.id}`}>
+                                <FileText className="h-4 w-4" />
+                                <span className="sr-only">View Patient</span>
+                              </a>
+                            </Button>
+                            <Button variant="ghost" size="icon" asChild>
+                              <a href={`/${hospitalName}/admin/patients/${patient.id}/records`}>
+                                <Activity className="h-4 w-4" />
+                                <span className="sr-only">Medical Records</span>
+                              </a>
+                            </Button>
+                            <Button variant="ghost" size="icon" asChild>
+                              <a href={`/${hospitalName}/admin/patients/${patient.id}/appointments`}>
+                                <Calendar className="h-4 w-4" />
+                                <span className="sr-only">Appointments</span>
+                              </a>
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                ) : (
+                  <TableRow>
+                    <TableCell colSpan={8} className="text-center py-8">
+                      <div className="text-muted-foreground">
+                        {searchPerformed 
+                          ? "No patients found matching your search criteria" 
+                          : "No patients found in the system"}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+          
+          {/* Pagination */}
+          {patients.length > 0 && pageCount > 1 && (
+            <Pagination 
+              currentPage={currentPage} 
+              totalPages={pageCount} 
+              onPageChange={handlePageChange}
+            />
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

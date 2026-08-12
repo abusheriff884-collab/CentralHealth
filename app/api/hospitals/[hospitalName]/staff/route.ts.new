@@ -1,0 +1,269 @@
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { prisma } from "@/lib/database/prisma-client";
+import { getAuth } from "@/lib/auth";
+import { validateAdminAccess } from "@/lib/auth/admin-validation";
+import { writeFile } from 'fs/promises';
+import { join } from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import { mkdir } from 'fs/promises';
+
+// Define the UserRole enum to match the schema
+enum UserRole {
+  PATIENT = "PATIENT",
+  DOCTOR = "DOCTOR",
+  STAFF = "STAFF",
+  MANAGER = "MANAGER",
+  ADMIN = "ADMIN"
+}
+
+// Validation schema for staff
+const staffSchema = z.object({
+  name: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Invalid email format"),
+  role: z.enum([UserRole.DOCTOR, UserRole.STAFF, UserRole.MANAGER, UserRole.ADMIN]),
+  specialties: z.array(z.string()).optional(),
+  salary: z.number().nonnegative().optional(),
+  telemedicineEnabled: z.boolean().optional(),
+  onlineBookingEnabled: z.boolean().optional(),
+  // Note: department and canChatWithPatients are removed as they don't exist in the schema
+});
+
+// GET /api/hospitals/[hospitalName]/staff - Get all staff for a hospital
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { hospitalName: string } }
+) {
+  console.log(`[Staff API] Processing GET request for hospital: ${params.hospitalName}`);
+  
+  try {
+    // Authenticate request using our central validation helper
+    const authResult = await getAuth(request);
+    const validation = validateAdminAccess(authResult);
+    
+    if (!validation.isAuthorized) {
+      // The helper already logs the error and creates the appropriate response
+      return validation.response;
+    }
+    
+    // If we get here, the user is authenticated and has admin-level access
+    console.log(`[Staff API] Staff management access granted to ${authResult.user.email} with role ${authResult.user.role}`);
+
+    // Find hospital by name
+    const hospital = await prisma.hospital.findFirst({
+      where: { name: params.hospitalName },
+    });
+
+    if (!hospital) {
+      return NextResponse.json({ error: "Hospital not found" }, { status: 404 });
+    }
+
+    // Get staff for this hospital
+    const staff = await prisma.user.findMany({
+      where: { 
+        hospitalId: hospital.id,
+        // Only get staff members (not patients)
+        role: {
+          in: [UserRole.DOCTOR, UserRole.STAFF, UserRole.MANAGER, UserRole.ADMIN]
+        }
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        specialties: true,
+        isHospitalAdmin: true,
+        photo: true, // This is the profile picture field in the schema
+        // We'll need to run a migration later to add these fields
+        // For now, we'll handle them through metadata in the app
+      },
+    });
+
+    // Enhance staff data with metadata from files, if available
+    const enhancedStaff = await Promise.all(
+      staff.map(async (member) => {
+        // Convert photo to profilePicture for frontend compatibility
+        const enhancedMember = {
+          ...member,
+          profilePicture: member.photo,
+          salary: 0,
+          telemedicineEnabled: member.role === UserRole.DOCTOR ? false : null,
+          onlineBookingEnabled: member.role === UserRole.DOCTOR ? false : null,
+          gender: null,
+          shift: null,
+        };
+
+        // Try to load additional metadata from file
+        try {
+          const metadataPath = join(process.cwd(), 'data', 'staff-metadata', `${member.id}.json`);
+          const fs = require('fs');
+          if (fs.existsSync(metadataPath)) {
+            const metadataRaw = fs.readFileSync(metadataPath, 'utf8');
+            const metadata = JSON.parse(metadataRaw);
+            
+            // Merge metadata with staff member data
+            return {
+              ...enhancedMember,
+              ...metadata
+            };
+          }
+        } catch (error) {
+          console.error(`Failed to load metadata for staff ${member.id}:`, error);
+          // Non-blocking, return the member without metadata
+        }
+        
+        return enhancedMember;
+      })
+    );
+
+    return NextResponse.json({ staff: enhancedStaff });
+    
+  } catch (error) {
+    console.error("Error getting hospital staff:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/hospitals/[hospitalName]/staff - Create a new staff member
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { hospitalName: string } }
+) {
+  try {
+    // Authenticate request using our central validation helper
+    const authResult = await getAuth(request);
+    const validation = validateAdminAccess(authResult);
+    
+    if (!validation.isAuthorized) {
+      // The helper already logs the error and creates the appropriate response
+      return validation.response;
+    }
+    
+    // Log the action for audit purposes - complying with Hospital Staff Management Security Policy
+    console.log(`Staff creation initiated by: ${authResult.user.email} (${authResult.user.role})`);
+
+    // Find hospital by name
+    const hospital = await prisma.hospital.findFirst({
+      where: { name: params.hospitalName },
+    });
+
+    if (!hospital) {
+      return NextResponse.json({ error: "Hospital not found" }, { status: 404 });
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validationResult = staffSchema.safeParse(body);
+    
+    if (!validationResult.success) {
+      return NextResponse.json(
+        { error: validationResult.error.errors },
+        { status: 400 }
+      );
+    }
+    
+    const validatedData = validationResult.data;
+    
+    // Check if email already exists
+    const existingUser = await prisma.user.findFirst({
+      where: { 
+        email: validatedData.email,
+      },
+    });
+    
+    if (existingUser) {
+      return NextResponse.json(
+        { error: "Email already in use" },
+        { status: 409 }
+      );
+    }
+
+    // Generate temporary password
+    const tempPassword = await generateTempPassword();
+
+    // Create user in database
+    const newUser = await prisma.user.create({
+      data: {
+        name: validatedData.name,
+        email: validatedData.email,
+        password: tempPassword, // In production, should be hashed
+        role: validatedData.role,
+        specialties: validatedData.specialties || [],
+        hospitalId: hospital.id,
+        // Explicitly set as NOT a hospital admin when creating via staff API
+        // This adheres to the Hospital Staff Management Security Policy
+        isHospitalAdmin: false,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        specialties: true,
+        isHospitalAdmin: true,
+        photo: true, // Use photo field instead of ProfilePicture which doesn't exist
+      },
+    });
+
+    // TODO: In a production environment, send email with temporary credentials
+    console.log(`Email would be sent to ${validatedData.email} with temporary password: ${tempPassword}`);
+
+    // Add virtual fields for frontend compatibility
+    const enhancedUser = {
+      ...newUser,
+      profilePicture: newUser.photo,
+      salary: validatedData.salary || 0,
+      telemedicineEnabled: validatedData.role === UserRole.DOCTOR ? (validatedData.telemedicineEnabled === true) : null,
+      onlineBookingEnabled: validatedData.role === UserRole.DOCTOR ? (validatedData.onlineBookingEnabled === true) : null,
+    };
+
+    // Store extra metadata in a separate database location or file for now
+    // This is a temporary solution until we can migrate the database
+    try {
+      // Create staff metadata directory if it doesn't exist
+      const metadataDir = join(process.cwd(), 'data', 'staff-metadata');
+      await mkdir(metadataDir, { recursive: true });
+      
+      // Save metadata to a JSON file
+      const metadataPath = join(metadataDir, `${newUser.id}.json`);
+      const metadata = {
+        salary: validatedData.salary || 0,
+        telemedicineEnabled: validatedData.role === UserRole.DOCTOR ? (validatedData.telemedicineEnabled === true) : null,
+        onlineBookingEnabled: validatedData.role === UserRole.DOCTOR ? (validatedData.onlineBookingEnabled === true) : null,
+      };
+      
+      await writeFile(metadataPath, JSON.stringify(metadata, null, 2));
+    } catch (error) {
+      console.error('Failed to save staff metadata:', error);
+      // Non-blocking, we still want to return the user
+    }
+
+    return NextResponse.json(enhancedUser, { status: 201 });
+    
+  } catch (error) {
+    console.error("Error creating hospital staff:", error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: error.errors },
+        { status: 400 }
+      );
+    }
+    
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+// Helper function to generate a temporary password
+async function generateTempPassword(): Promise<string> {
+  // Use a fixed temporary password as required in the spec: "123456789"
+  // This is for development only - in production, we would generate a secure random password
+  return "123456789";
+}
